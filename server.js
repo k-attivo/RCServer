@@ -298,7 +298,24 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+// ── Keepalive: impedisce il cold start su Render free plan ────
+// Render mette in sleep dopo 15min di inattività.
+// Un self-ping ogni 14min mantiene il server sveglio.
+// Solo in produzione (RENDER_EXTERNAL_URL è settato da Render automaticamente).
+if (process.env.RENDER_EXTERNAL_URL) {
+  const KEEPALIVE_URL = process.env.RENDER_EXTERNAL_URL + '/health';
+  setInterval(async () => {
+    try {
+      const res = await fetch(KEEPALIVE_URL);
+      console.log(`[KEEPALIVE] ${res.status} ${new Date().toISOString()}`);
+    } catch (e) {
+      console.warn('[KEEPALIVE] failed:', e.message);
+    }
+  }, 14 * 60 * 1000); // 14 minuti
+  console.log(`[KEEPALIVE] Attivo → ${KEEPALIVE_URL}`);
+}
+
 // ── Avvio ──────────────────────────────────────────────────────
 server.listen(PORT, () => {
-  console.log(`🚀 Roads & Cities multiplayer server on port ${PORT}`);
+  console.log(`Roads & Cities multiplayer server on port ${PORT}`);
 });

@@ -41,8 +41,28 @@ const RECONNECT_TIMEOUT_MS = 60_000;
 // ── Setup HTTP ─────────────────────────────────────────────────
 const app = express();
 app.use(cors({ origin: '*' }));
+app.use(express.json({ limit: '512kb', type: ['application/json', 'text/plain'] }));
 app.get('/', (req, res) => res.send('Roads & Cities multiplayer server is running'));
 app.get('/health', (req, res) => res.json({ ok: true, time: Date.now() }));
+
+// ── ANALYTICS (beta) ───────────────────────────────────────────
+// Buffer in memoria: gli eventi arrivano dal client e vengono stampati
+// nei log di Render (visibili dalla dashboard Render → Logs).
+// GET /track/recent → vedi gli ultimi 200 eventi nel browser.
+const analyticsBuf = [];
+const ANALYTICS_MAX = 500;
+app.post('/track', (req, res) => {
+  const events = Array.isArray(req.body?.events) ? req.body.events : [];
+  const v = req.body?.v || '?';
+  for (const e of events) {
+    const rec = { ...e, v, recv: Date.now() };
+    analyticsBuf.push(rec);
+    console.log('[ANALYTICS]', JSON.stringify(rec));
+  }
+  if (analyticsBuf.length > ANALYTICS_MAX) analyticsBuf.splice(0, analyticsBuf.length - ANALYTICS_MAX);
+  res.json({ ok: true, n: events.length });
+});
+app.get('/track/recent', (req, res) => res.json(analyticsBuf.slice(-200)));
 
 const server = createServer(app);
 const io = new Server(server, {

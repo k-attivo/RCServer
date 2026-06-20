@@ -352,7 +352,15 @@ io.on('connection', (socket) => {
     if (player.slot !== room.state.currentPlayer) return;
 
     room.state.currentPlayer = 1 - room.state.currentPlayer;
-    socket.to(code).emit('game:skip', { player: player.slot });
+
+    // Conferma esplicita al mittente, stesso schema di game:move_accepted:
+    // prima lo skip veniva notificato SOLO all'avversario, e chi l'aveva
+    // richiesto cambiava già il proprio currentPlayer in locale prima
+    // ancora di sapere se il server l'avesse applicato — esattamente lo
+    // stesso bug di desync già corretto per il piazzamento.
+    const skipData = { player: player.slot };
+    socket.emit('game:skip_accepted', skipData);
+    socket.to(code).emit('game:skip', skipData);
   });
 
   socket.on('game:round_end', ({ score, penalties }) => {

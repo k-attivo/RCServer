@@ -38,9 +38,14 @@ import cors from 'cors';
 const PORT = process.env.PORT || 3000;
 const RECONNECT_TIMEOUT_MS = 60_000;
 
+// Origine consentita: SOLO il dominio reale del gioco. Prima era '*' (chiunque,
+// da qualsiasi sito, poteva collegarsi al server e usarne le risorse gratis
+// del piano Render, incluso l'endpoint /track). Costo zero chiuderlo.
+const ALLOWED_ORIGIN = 'https://roads-and-cities.support-roadsandcities.workers.dev';
+
 // ── Setup HTTP ─────────────────────────────────────────────────
 const app = express();
-app.use(cors({ origin: '*' }));
+app.use(cors({ origin: ALLOWED_ORIGIN }));
 app.use(express.json({ limit: '512kb', type: ['application/json', 'text/plain'] }));
 app.get('/', (req, res) => res.send('Roads & Cities multiplayer server is running'));
 app.get('/health', (req, res) => res.json({ ok: true, time: Date.now() }));
@@ -66,7 +71,7 @@ app.get('/track/recent', (req, res) => res.json(analyticsBuf.slice(-200)));
 
 const server = createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST'] },
+  cors: { origin: ALLOWED_ORIGIN, methods: ['GET', 'POST'] },
 });
 
 // ── Stato globale ──────────────────────────────────────────────

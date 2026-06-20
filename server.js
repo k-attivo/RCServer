@@ -34,6 +34,22 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
+import { createRequire } from 'module';
+
+// rules-shared.js e deck.js sono SCRITTI per girare ovunque (browser incluso),
+// quindi usano module.exports in stile CommonJS. Questo file (server.js) è
+// ESM puro (il progetto ha "type":"module" in package.json) — createRequire
+// permette di caricare moduli CommonJS da dentro un file ESM senza dover
+// riscrivere tutto il server in CommonJS solo per due import.
+// I file vivono in shared/ con un package.json locale {"type":"commonjs"}
+// che forza Node a interpretarli come CommonJS lì dentro, a prescindere dal
+// package.json principale. Sono COPIE IDENTICHE degli stessi file usati dal
+// client (js/rules-shared.js, js/deck.js) — se modifichi le regole di gioco
+// o il deck, aggiorna ENTRAMBE le copie (client e shared/), altrimenti client
+// e server finiscono per validare con regole diverse.
+const require = createRequire(import.meta.url);
+const Rules = require('./shared/rules-shared.js');
+const DECK = require('./shared/deck.js');
 
 const PORT = process.env.PORT || 3000;
 const RECONNECT_TIMEOUT_MS = 60_000;
@@ -101,6 +117,13 @@ function createRoom(code, isPrivate = false) {
       totalRounds: 1,
       started: false,
       ended: false,
+      // ── Validazione mosse (v2) ──
+      // Stato di gioco vero (board/roadMap), ricostruito mossa dopo mossa
+      // via Rules.applyMoveToState. Permette al server di verificare se una
+      // mossa è LEGALE prima di accettarla — non solo se è il turno giusto.
+      // Default 10x10 senza entry points; sovrascritto in startGame() se il
+      // client che avvia la partita ha inviato mapData.
+      game: Rules.createEmptyState(10, 10, []),
     },
     createdAt: Date.now(),
   };
@@ -111,6 +134,14 @@ function createRoom(code, isPrivate = false) {
 function startGame(room) {
   room.state.started = true;
   room.state.currentPlayer = 0;
+
+  // ── Costruisce lo stato di gioco reale (board/roadMap/entryPoints) ──
+  // Se è una stanza privata con una mappa custom in attesa (pendingMapData,
+  // salvata da room:create), applica i suoi entry points. Altrimenti resta
+  // la mappa standard 10x10 già creata in createRoom().
+  if (room.pendingMapData && Array.isArray(room.pendingMapData.entryPoints)) {
+    Rules.applyMapEntryPoints(room.state.game, room.pendingMapData.entryPoints);
+  }
 
   // Invia game:start a entrambi con info reciproca
   const [p0, p1] = room.players;
@@ -206,11 +237,16 @@ io.on('connection', (socket) => {
   });
 
   // ── STANZE PRIVATE ──
-  socket.on('room:create', ({ name, avatar }) => {
+  // Solo le stanze private possono avere una mappa custom (entry points).
+  // Il matchmaking automatico resta sempre sulla mappa standard 10x10:
+  // due sconosciuti abbinati a caso non devono ritrovarsi a giocare una
+  // mappa che uno dei due ha scelto senza che l'altro lo sapesse.
+  socket.on('room:create', ({ name, avatar, mapData }) => {
     name = (name || 'Giocatore').slice(0, 20);
     avatar = avatar || 'preset:0';
     const code = genRoomCode();
     const room = createRoom(code, true);
+    room.pendingMapData = (mapData && typeof mapData === 'object') ? mapData : null;
     room.players.push({ socketId: socket.id, name, avatar, slot: 0 });
     playerRoom.set(socket.id, code);
     socket.join(code);
@@ -245,19 +281,46 @@ io.on('connection', (socket) => {
     const player = room.players.find(p => p.socketId === socket.id);
     if (!player) return;
 
-    // Validazione: è il turno di questo giocatore?
+    // Validazione 1: è il turno di questo giocatore?
     if (player.slot !== room.state.currentPlayer) {
       socket.emit('game:error', { reason: 'not_your_turn' });
       return;
     }
 
-    // Registra mossa
+    // Validazione 2: i dati della mossa hanno una forma sensata?
+    // (prima di qualunque lookup, per evitare crash su input malformato)
+    const { col, row, rot, deckIdx } = data || {};
+    if (
+      !Number.isInteger(col) || !Number.isInteger(row) ||
+      !Number.isInteger(rot) || rot < 0 || rot > 3 ||
+      !Number.isInteger(deckIdx) || deckIdx < 0 || deckIdx >= DECK.length
+    ) {
+      socket.emit('game:error', { reason: 'invalid_move', detail: 'malformed' });
+      return;
+    }
+    const piece = DECK[deckIdx];
+
+    // Validazione 3 — QUESTA è la validazione vera: la mossa è LEGALE secondo
+    // le regole di piazzamento (celle libere, bordo/entry point alla prima
+    // mossa, coerenza stradale, connessione alla propria rete)? Prima questo
+    // controllo non esisteva: il server fidava ciecamente del client.
+    room.state.game.currentPlayer = player.slot;
+    const result = Rules.checkPlacementRules({
+      piece, rot, originCol: col, originRow: row, state: room.state.game,
+    });
+    if (!result.ok) {
+      socket.emit('game:error', { reason: 'invalid_move', detail: result.reason });
+      console.warn(`[ROOM ${code}] Mossa rifiutata da ${player.name}: ${result.reason}`);
+      return;
+    }
+
+    // Mossa valida: applica allo stato di gioco reale del server...
+    Rules.applyMoveToState(room.state.game, { piece, rot, col, row, player: player.slot });
+
+    // ...e registra mossa nello storico (per log/debug/futuro replay)
     const move = {
       player: player.slot,
-      col: data.col,
-      row: data.row,
-      rot: data.rot,
-      deckIdx: data.deckIdx,
+      col, row, rot, deckIdx,
       ts: Date.now(),
     };
     room.state.moves.push(move);

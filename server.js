@@ -143,7 +143,10 @@ function startGame(room) {
     Rules.applyMapEntryPoints(room.state.game, room.pendingMapData.entryPoints);
   }
 
-  // Invia game:start a entrambi con info reciproca
+  // Invia game:start a entrambi con info reciproca, INCLUSA la mappa che il
+  // server ha effettivamente applicato (null per il matchmaking standard).
+  // Il client deve visualizzare ESATTAMENTE questa mappa, non una "attiva"
+  // letta da localStorage — altrimenti i due lati possono divergere.
   const [p0, p1] = room.players;
   io.to(p0.socketId).emit('game:start', {
     you:      { slot: 0, name: p0.name, avatar: p0.avatar },
@@ -151,6 +154,7 @@ function startGame(room) {
     room: room.code,
     round: room.state.round,
     totalRounds: room.state.totalRounds,
+    mapData: room.pendingMapData || null,
   });
   io.to(p1.socketId).emit('game:start', {
     you:      { slot: 1, name: p1.name, avatar: p1.avatar },
@@ -158,6 +162,7 @@ function startGame(room) {
     room: room.code,
     round: room.state.round,
     totalRounds: room.state.totalRounds,
+    mapData: room.pendingMapData || null,
   });
   console.log(`[ROOM ${room.code}] Started: ${p0.name} vs ${p1.name}`);
 }
@@ -325,6 +330,13 @@ io.on('connection', (socket) => {
     };
     room.state.moves.push(move);
     room.state.currentPlayer = 1 - room.state.currentPlayer;
+
+    // Conferma esplicita al MITTENTE: prima la mossa veniva broadcastata
+    // solo all'avversario, e chi l'aveva inviata non aveva modo di sapere
+    // con certezza se fosse stata accettata (solo l'assenza di un errore).
+    // Il client ora aspetta questo evento prima di applicare la mossa in
+    // locale — niente più piazzamento ottimistico che può desincronizzarsi.
+    socket.emit('game:move_accepted', move);
 
     // Broadcast all'avversario
     socket.to(code).emit('game:move', move);

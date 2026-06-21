@@ -124,6 +124,15 @@ function createRoom(code, isPrivate = false) {
       // Default 10x10 senza entry points; sovrascritto in startGame() se il
       // client che avvia la partita ha inviato mapData.
       game: Rules.createEmptyState(10, 10, []),
+      // Contatore skip CONSECUTIVI (azzerato da ogni mossa valida). Se
+      // arriva a 2, significa che entrambi i giocatori hanno saltato di
+      // fila senza che nessuno piazzasse nel mezzo — nessuno dei due può
+      // più giocare, quindi è game over per stallo. Prima questo controllo
+      // esisteva SOLO lato client (placement.js → checkAutoSkip), che però
+      // online non viene mai eseguito: senza questo contatore, i due client
+      // si scambiano skip confermati dal server all'infinito, senza che la
+      // partita finisca mai.
+      consecutiveSkips: 0,
     },
     createdAt: Date.now(),
   };
@@ -330,6 +339,7 @@ io.on('connection', (socket) => {
     };
     room.state.moves.push(move);
     room.state.currentPlayer = 1 - room.state.currentPlayer;
+    room.state.consecutiveSkips = 0;   // una mossa valida rompe la catena di skip
 
     // Conferma esplicita al MITTENTE: prima la mossa veniva broadcastata
     // solo all'avversario, e chi l'aveva inviata non aveva modo di sapere
@@ -352,15 +362,21 @@ io.on('connection', (socket) => {
     if (player.slot !== room.state.currentPlayer) return;
 
     room.state.currentPlayer = 1 - room.state.currentPlayer;
+    room.state.consecutiveSkips = (room.state.consecutiveSkips || 0) + 1;
 
-    // Conferma esplicita al mittente, stesso schema di game:move_accepted:
-    // prima lo skip veniva notificato SOLO all'avversario, e chi l'aveva
-    // richiesto cambiava già il proprio currentPlayer in locale prima
-    // ancora di sapere se il server l'avesse applicato — esattamente lo
-    // stesso bug di desync già corretto per il piazzamento.
     const skipData = { player: player.slot };
     socket.emit('game:skip_accepted', skipData);
     socket.to(code).emit('game:skip', skipData);
+
+    // Due skip di fila, senza nessuna mossa valida nel mezzo, significa che
+    // ENTRAMBI i giocatori sono bloccati — stesso identico criterio usato
+    // offline in placement.js. Senza questo controllo, i due client si
+    // scambiano skip confermati all'infinito e la partita non finisce mai.
+    if (room.state.consecutiveSkips >= 2) {
+      room.state.ended = true;
+      io.to(code).emit('game:end', { reason: 'stalemate' });
+      console.log(`[ROOM ${code}] Stallo: nessun giocatore può più piazzare — round terminato`);
+    }
   });
 
   socket.on('game:round_end', ({ score, penalties }) => {

@@ -25,7 +25,7 @@
 //   'game:start'       — { you, opponent, round, totalRounds } — partita inizia
 //   'game:state'       — { board, roadMap, currentPlayer, turn } — sync stato
 //   'game:move'        — { col, row, rot, deckIdx, player } — mossa avversario
-//   'game:end'         — { winner, score } — fine partita
+//   'game:end'         — { winner, reason, rewardEligible } — fine partita
 //   'game:opp_left'    — avversario disconnesso
 //   'game:opp_back'    — avversario riconnesso
 // ================================================================
@@ -96,6 +96,18 @@ const rooms = new Map();                       // code → room
 const playerRoom = new Map();                  // socketId → code
 const disconnectTimers = new Map();            // socketId → setTimeout
 
+// Soglia minima di mosse VALIDE totali nella room (somma dei due giocatori,
+// su tutti i round) perché una vittoria per abbandono/resa sia considerata
+// "premiabile" (XP, monete, classifica). NON è una misura anti-cheat contro
+// il multi-account (un abusore motivato la supera in pochi secondi) — serve
+// solo a filtrare il caso banale di abbandono/disconnessione a partita
+// appena iniziata (doppio tap, connessione caduta nei primi secondi), dove
+// premiare "chi resta" non avrebbe senso perché non si è giocato nulla.
+// Il problema multi-account resta apertamente non risolto: richiederebbe
+// identità reale (device fingerprint, rate-limit per utente sulle vittorie
+// per abbandono), fuori scope per questo fix.
+const MIN_MOVES_FOR_REWARD = 6;
+
 function genRoomCode() {
   // 6 cifre, evita codici già in uso
   for (let i = 0; i < 10; i++) {
@@ -103,6 +115,12 @@ function genRoomCode() {
     if (!rooms.has(code)) return code;
   }
   return Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+
+// Vedi nota su MIN_MOVES_FOR_REWARD sopra: filtro anti-limbo-istantaneo,
+// non anti-multiaccount.
+function isRewardEligible(room) {
+  return (room.state.moves || []).length >= MIN_MOVES_FOR_REWARD;
 }
 
 function createRoom(code, isPrivate = false) {
@@ -202,6 +220,7 @@ function leaveAll(socketId) {
             if (opponent) io.to(opponent.socketId).emit('game:end', {
               reason: 'opponent_abandoned',
               winner: opponentIdx,
+              rewardEligible: isRewardEligible(r),
             });
           }
         }
@@ -399,6 +418,7 @@ io.on('connection', (socket) => {
     io.to(code).emit('game:end', {
       reason: 'resigned',
       winner: 1 - player.slot,
+      rewardEligible: isRewardEligible(room),
     });
   });
 
